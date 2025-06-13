@@ -1,8 +1,32 @@
-
-
+import os
+import time
+import json
+import re
+import torch
 import pandas as pd
-df = pd.read_csv("C:\\ttt\\dflyricsoutput.csv")
-print("Loaded records:",len(df))
+
+from tqdm import tqdm
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from accelerate import disk_offload
+from sklearn.metrics import classification_report
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+from dotenv import load_dotenv
+
+# === Load environment variables ===
+load_dotenv()
+HF_TOKEN = os.getenv("HF_TOKEN")
+if not HF_TOKEN:
+    raise ValueError("Missing HF_TOKEN in .env file.")
+
+# === Load dataset (use a relative, clean path) ===
+df_path = os.path.join("data", "dflyricsoutput.csv")
+df = pd.read_csv(df_path)
+print("Loaded records:", len(df))
+
+# === Map Valence & Arousal to Emotion Labels ===
 def va_map_to_emotion(valence, arousal):
     if 0.7 <= valence <= 1.0 and 0.5 <= arousal <= 1.0:
         return 'love'
@@ -22,42 +46,32 @@ def va_map_to_emotion(valence, arousal):
         return 'neutral'
     else:
         return 'unknown'
-# df['emotion_label'] = df.apply(lambda x: va_map_to_emotion(x['valence'], x['arousal']), axis=1)
-# df.head()
 
+df['emotion_label'] = df.apply(lambda x: va_map_to_emotion(x['valence'], x['arousal']), axis=1)
 
-import os, time, json, torch
-import pandas as pd
-from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from accelerate import disk_offload
-
+# === LLM Setup ===
 model_id = "openchat/openchat-3.5-1210"
 offload_dir = "./offload_folder"
 os.makedirs(offload_dir, exist_ok=True)
 
-tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-
+tokenizer = AutoTokenizer.from_pretrained(model_id, token=HF_TOKEN, trust_remote_code=True)
 model1 = AutoModelForCausalLM.from_pretrained(
-
     model_id,
-    
+    token=HF_TOKEN,
     device_map="auto",
     torch_dtype=torch.float16,
     offload_folder=offload_dir,
-    # offload_state_dict=True,
     trust_remote_code=True
-    
 )
-
-# disk_offload(model=model1, offload_dir=offload_dir)  
 
 generator = pipeline("text-generation", model=model1, tokenizer=tokenizer)
 
+# === LLM Inference on Dataset ===
 target_labels = ["joy", "anger", "sadness", "calm", "surprise", "love", "fear", "unknown"]
 MAX_LYRICS_LENGTH = 600
 
 def run_llm_on_dataset(df, output_path, delay=0.0, batch_size=8):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     results = []
 
     if os.path.exists(output_path):
@@ -122,22 +136,19 @@ Reason: <short rationale>
             time.sleep(delay)
 
     print(f"Finished. Total saved: {len(results)}")
+
+# Run LLM processing
 run_llm_on_dataset(
     df,
-    output_path='/content/drive/MyDrive/music4all/openchat_results.json'
+    output_path=os.path.join("output", "openchat_results.json")
 )
 
-
-from sklearn.metrics import classification_report
-import pandas as pd
-
+# === Evaluation Function ===
 def evaluate_accuracy(results_json):
-    import json
     with open(results_json, 'r') as f:
         data = json.load(f)
 
-    y_true = []
-    y_pred = []
+    y_true, y_pred = [], []
 
     for d in data:
         try:
@@ -150,47 +161,43 @@ def evaluate_accuracy(results_json):
 
     print(classification_report(y_true, y_pred, labels=target_labels))
 
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import train_test_split
-
-def parse_ouput(entry):
-  text = entry["llm_output"]
-  try:
-    emotion = re.search(r'Emotion:\s*(\w+)', text).group(1)
-    confidence = int(re.search(r'Confidence:\s*(\d+)', text).group(1))
-    reason = re.search(r'Reason:\s*(.*)', text, re.DOTALL).group(1)
-    return emotion, confidence, reason
-  except:
-    return None, None, None
-
+# === Parse & Confidence Model ===
+def parse_output(entry):
+    text = entry["llm_output"]
+    try:
+        emotion = re.search(r'Emotion:\s*(\w+)', text).group(1)
+        confidence = int(re.search(r'Confidence:\s*(\d+)', text).group(1))
+        reason = re.search(r'Reason:\s*(.*)', text, re.DOTALL).group(1)
+        return emotion, confidence, reason
+    except:
+        return None, None, None
 
 def build_confidence_model(json_path):
-  with open(json_path, 'r') as f:
-    data = json.load(f)
+    with open(json_path, 'r') as f:
+        data = json.load(f)
 
-  records = []
-  for d in data:
-    emotion, confidence, reason = parse_ouput(d)
-    if emotion and confidence and reason:
-      records.append({
-          "lyrics": d["lyrics"],
-          "true_emotion": d["true_emotion"],
-          "gpt_emotion": emotion,
-          "confidence": confidence,
-          "reason": reason
-      })
-  df = pd.DataFrame(records)
-  df["correct"] = (df["gpt_emotion"].str.lower() == df["true_emotion"].str.lower()).astype(int)
+    records = []
+    for d in data:
+        emotion, confidence, reason = parse_output(d)
+        if emotion and confidence and reason:
+            records.append({
+                "lyrics": d["lyrics"],
+                "true_emotion": d["true_emotion"],
+                "gpt_emotion": emotion,
+                "confidence": confidence,
+                "reason": reason
+            })
 
-  tfidf = TfidfVectorizer(max_features = 500)
-  X = tfidf.fit_transform(df["lyrics"])
-  y = df["confidence"]
+    df_conf = pd.DataFrame(records)
+    df_conf["correct"] = (df_conf["gpt_emotion"].str.lower() == df_conf["true_emotion"].str.lower()).astype(int)
 
-  X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.2)
-  model = GradientBoostingRegressor()
-  model.fit(X_train, y_train)
-  y_pred = model.predict(X_test)
-  mse = mean_squared_error(y_test, y_pred)
-  print(f"Confidence regression MSE: {mse}")
+    tfidf = TfidfVectorizer(max_features=500)
+    X = tfidf.fit_transform(df_conf["lyrics"])
+    y = df_conf["confidence"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    model = GradientBoostingRegressor()
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    mse = mean_squared_error(y_test, y_pred)
+    print(f"Confidence regression MSE: {mse}")
