@@ -1,9 +1,7 @@
-import torch
-from google.colab import drive
-drive.mount('/content/drive')
+
 
 import pandas as pd
-df = pd.read_csv("/content/drive/MyDrive/dflyricsoutput.csv")
+df = pd.read_csv("C:\\ttt\\dflyricsoutput.csv")
 print("Loaded records:",len(df))
 def va_map_to_emotion(valence, arousal):
     if 0.7 <= valence <= 1.0 and 0.5 <= arousal <= 1.0:
@@ -24,15 +22,15 @@ def va_map_to_emotion(valence, arousal):
         return 'neutral'
     else:
         return 'unknown'
-df['emotion_label'] = df.apply(lambda x: va_map_to_emotion(x['valence'], x['arousal']), axis=1)
-df.head()
+# df['emotion_label'] = df.apply(lambda x: va_map_to_emotion(x['valence'], x['arousal']), axis=1)
+# df.head()
 
 
-!pip install transformers accelerate bitsandbytes --quiet
 import os, time, json, torch
 import pandas as pd
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from accelerate import disk_offload
 
 model_id = "openchat/openchat-3.5-1210"
 offload_dir = "./offload_folder"
@@ -40,15 +38,21 @@ os.makedirs(offload_dir, exist_ok=True)
 
 tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
-model = AutoModelForCausalLM.from_pretrained(
+model1 = AutoModelForCausalLM.from_pretrained(
+
     model_id,
+    
     device_map="auto",
     torch_dtype=torch.float16,
     offload_folder=offload_dir,
+    # offload_state_dict=True,
     trust_remote_code=True
+    
 )
 
-generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+# disk_offload(model=model1, offload_dir=offload_dir)  
+
+generator = pipeline("text-generation", model=model1, tokenizer=tokenizer)
 
 target_labels = ["joy", "anger", "sadness", "calm", "surprise", "love", "fear", "unknown"]
 MAX_LYRICS_LENGTH = 600
