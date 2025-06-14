@@ -87,8 +87,9 @@ def run_llm_on_dataset(df, output_path, delay=0.0, batch_size=16):
         processed_lyrics = set()
 
     unprocessed = df[~df['lyrics'].isin(processed_lyrics)]
+    total_batches = (len(unprocessed) + batch_size - 1) // batch_size
 
-    for i in range(0, len(unprocessed), batch_size):
+    for batch_idx, i in enumerate(range(0, len(unprocessed), batch_size)):
         batch = unprocessed.iloc[i:i+batch_size]
         prompts = []
 
@@ -131,12 +132,12 @@ Reason: <short rationale>
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
 
-        print(f"Processed batch {i}–{i+len(batch)} of {len(unprocessed)}")
+        print(f"Processed batch {batch_idx + 1}/{total_batches} ({i}-{i + len(batch) - 1}) of {len(unprocessed)}")
+
         if delay > 0:
             time.sleep(delay)
 
     print(f"Finished. Total saved: {len(results)}")
-
 # Run LLM processing
 run_llm_on_dataset(
     df,
