@@ -70,7 +70,7 @@ generator = pipeline("text-generation", model=model1, tokenizer=tokenizer)
 target_labels = ["joy", "anger", "sadness", "calm", "surprise", "love", "fear", "unknown"]
 MAX_LYRICS_LENGTH = 600
 
-def run_llm_on_dataset(df, output_path, delay=0.0, batch_size=8):
+def run_llm_on_dataset(df, output_path, delay=0.0, batch_size=16):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     results = []
 
